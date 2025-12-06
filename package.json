@@ -1,0 +1,24 @@
+{
+  "name": "socket_stateless_kube",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"No tests yet\"",
+    "start:gateway": "node gateway/index.js",
+    "start:worker": "node worker/index.js",
+    "start:matchmaker": "node matchmaker/index.js",
+    "start:client": "node client/server.js",
+    "test:smoke": "node tests/smoke.js",
+    "test:load": "node tests/load.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@kubernetes/client-node": "^1.4.0",
+    "redis": "^5.10.0",
+    "uuid": "^13.0.0",
+    "ws": "^8.18.3"
+  }
+}
