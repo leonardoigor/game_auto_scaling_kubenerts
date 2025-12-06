@@ -41,10 +41,10 @@ function subscribeRoom(roomId) {
         const room = roomId;
         for (const [, info] of connections) {
             if (info.roomId === room && info.ws.readyState === 1) {
-                info.ws.send(encode(Types.state_update, parsed.payload));
+                info.ws.send(encode(parsed.type, parsed.payload));
             }
         }
-        log.debug("state_update broadcast", { roomId });
+        log.debug("room out broadcast", { roomId, type: parsed.type });
     });
     log.info("room subscribed", { roomId });
 }
@@ -129,6 +129,21 @@ wss.on("connection", async (ws, req) => {
             };
             await pub.publish(`room:${info.roomId}:in`, JSON.stringify(payload));
             log.info("attack forwarded", { playerId: info.playerId, roomId: info.roomId });
+        } else if (msg.type === Types.ping) {
+            const info = connections.get(connId);
+            if (!info) return;
+            const tsClient = msg.payload?.ts || Date.now();
+            try { ws.send(encode(Types.pong_gateway, { ts_client: tsClient, ts_gateway: Date.now() })); } catch (e) { }
+            if (info.roomId) {
+                const payload = { type: Types.ping_worker, roomId: info.roomId, playerId: info.playerId, ts_client: tsClient };
+                await pub.publish(`room:${info.roomId}:in`, JSON.stringify(payload));
+            }
+        } else if (msg.type === Types.latency_report) {
+            const info = connections.get(connId);
+            if (!info || !info.roomId) return;
+            const payload = { playerId: info.playerId, roomId: info.roomId, rtt_ms: msg.payload?.rtt_ms, ts: Date.now() };
+            await pub.publish(`room:${info.roomId}:out`, JSON.stringify({ type: Types.latency_update, payload }));
+            log.debug("latency_update broadcast", { roomId: info.roomId, playerId: info.playerId, rtt_ms: msg.payload?.rtt_ms });
         } else if (msg.type === Types.leave) {
             const info = connections.get(connId);
             if (info && info.roomId && info.playerId) {

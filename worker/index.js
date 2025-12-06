@@ -13,8 +13,8 @@ const BUFF_PICK_RADIUS = 14;
 const BUFF_DURATION_MS = 20000;
 const BUFF_AURA_RANGE = 100;
 
-const sub = createClient({ url: REDIS_URL });
-const pub = createClient({ url: REDIS_URL });
+let sub = createClient({ url: REDIS_URL });
+let pub = createClient({ url: REDIS_URL });
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 async function connectWithRetry(client, label) {
   for (let i = 0; i < 20; i++) {
@@ -195,13 +195,13 @@ function stepRoom(roomId, dt) {
   }
   room.projectiles = nextProjectiles;
   room.lastUpdate = Date.now();
-  const payload = { roomId, players: Array.from(room.players.entries()).map(([id, p]) => ({ id, x: p.x, y: p.y, podId: p.podId, hp: p.hp ?? 100, maxHp: p.maxHp ?? 100, dead: !!p.dead, killerId: p.killerId || null, buffs: (Array.isArray(p.buffs) ? p.buffs.map((b) => b.type) : []) })), projectiles: room.projectiles.map((b) => ({ x: b.x, y: b.y })), buffItems: (room.buffItems || []).map((it) => ({ x: it.x, y: it.y, type: it.type })) };
+  const payload = { roomId, players: Array.from(room.players.entries()).map(([id, p]) => ({ id, x: p.x, y: p.y, podId: p.podId, speed: p.speed, hp: p.hp ?? 100, maxHp: p.maxHp ?? 100, dead: !!p.dead, killerId: p.killerId || null, buffs: (Array.isArray(p.buffs) ? p.buffs.map((b) => ({ type: b.type, expiresAt: b.expiresAt })) : []) })), projectiles: room.projectiles.map((b) => ({ x: b.x, y: b.y })), buffItems: (room.buffItems || []).map((it) => ({ x: it.x, y: it.y, type: it.type })) };
   return pub.publish(`room:${roomId}:out`, JSON.stringify({ type: "state_update", payload }));
 }
 
 async function persistRoom(roomId) {
   const room = getRoom(roomId);
-  const state = { players: Array.from(room.players.entries()).map(([id, p]) => ({ id, x: p.x, y: p.y, hp: p.hp ?? 100, maxHp: p.maxHp ?? 100, dead: !!p.dead, killerId: p.killerId || null, buffs: (Array.isArray(p.buffs) ? p.buffs.map((b) => b.type) : []) })), projectiles: room.projectiles.map((b) => ({ x: b.x, y: b.y })), buffItems: (room.buffItems || []).map((it) => ({ x: it.x, y: it.y, type: it.type })) };
+  const state = { players: Array.from(room.players.entries()).map(([id, p]) => ({ id, x: p.x, y: p.y, speed: p.speed, hp: p.hp ?? 100, maxHp: p.maxHp ?? 100, dead: !!p.dead, killerId: p.killerId || null, buffs: (Array.isArray(p.buffs) ? p.buffs.map((b) => ({ type: b.type, expiresAt: b.expiresAt })) : []) })), projectiles: room.projectiles.map((b) => ({ x: b.x, y: b.y })), buffItems: (room.buffItems || []).map((it) => ({ x: it.x, y: it.y, type: it.type })) };
   await pub.set(`room:${roomId}:state`, JSON.stringify(state), { EX: 120 });
 }
 
@@ -216,8 +216,23 @@ async function tick() {
 }
 
 async function main() {
-  await connectWithRetry(sub, "sub");
-  await connectWithRetry(pub, "pub");
+  const list = (process.env.REDIS_URLS || `${REDIS_URL},redis://redis:6379,redis://localhost:6379,redis://host.docker.internal:6379`).split(",").map(s => s.trim()).filter(Boolean);
+  let connected = false;
+  for (const u of list) {
+    try {
+      sub = createClient({ url: u });
+      pub = createClient({ url: u });
+      await connectWithRetry(sub, "sub");
+      await connectWithRetry(pub, "pub");
+      log.info("redis connected", { url: u });
+      connected = true;
+      break;
+    } catch (e) {
+      try { await sub.disconnect(); } catch (e2) { }
+      try { await pub.disconnect(); } catch (e3) { }
+    }
+  }
+  if (!connected) throw new Error("redis connect failed for all urls");
   await sub.pSubscribe("room:*:in", async (raw, channel) => {
     try {
       const msg = JSON.parse(raw);
@@ -230,9 +245,14 @@ async function main() {
       } else if (msg.type === "input_attack") {
         if (!room.players.has(playerId)) room.players.set(playerId, { x: 100, y: 100, vx: 0, vy: 0, speed: 180, podId: null, hp: 100, maxHp: 100, dead: false, killerId: null, lastAttackTs: 0 });
         handleAttack(room, playerId, msg.angle || 0);
-        const payload = { roomId, players: Array.from(room.players.entries()).map(([id, p]) => ({ id, x: p.x, y: p.y, podId: p.podId, hp: p.hp ?? 100, maxHp: p.maxHp ?? 100, dead: !!p.dead, killerId: p.killerId || null, buffs: (Array.isArray(p.buffs) ? p.buffs.map((b) => b.type) : []) })), projectiles: room.projectiles.map((b) => ({ x: b.x, y: b.y })), buffItems: (room.buffItems || []).map((it) => ({ x: it.x, y: it.y, type: it.type })) };
+        const payload = { roomId, players: Array.from(room.players.entries()).map(([id, p]) => ({ id, x: p.x, y: p.y, podId: p.podId, speed: p.speed, hp: p.hp ?? 100, maxHp: p.maxHp ?? 100, dead: !!p.dead, killerId: p.killerId || null, buffs: (Array.isArray(p.buffs) ? p.buffs.map((b) => ({ type: b.type, expiresAt: b.expiresAt })) : []) })), projectiles: room.projectiles.map((b) => ({ x: b.x, y: b.y })), buffItems: (room.buffItems || []).map((it) => ({ x: it.x, y: it.y, type: it.type })) };
         await pub.publish(`room:${roomId}:out`, JSON.stringify({ type: "state_update", payload }));
         log.info("attack", { roomId, playerId });
+      } else if (msg.type === "ping_worker") {
+        const tsClient = msg.ts_client || Date.now();
+        const payload = { roomId, playerId, ts_client: tsClient, ts_worker: Date.now() };
+        await pub.publish(`room:${roomId}:out`, JSON.stringify({ type: "pong_worker", payload }));
+        log.debug("pong_worker", { roomId, playerId });
       } else {
         if (!room.players.has(playerId)) room.players.set(playerId, { x: 100, y: 100, vx: 0, vy: 0, speed: 180, podId: null, hp: 100, maxHp: 100, dead: false, killerId: null, lastAttackTs: 0 });
         const existing = room.players.get(playerId);

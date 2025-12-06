@@ -30,4 +30,5 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, () => {
   console.log(`client server on ${PORT}`);
+  console.log(`Run http://localhost:${PORT}?room=123`);
 });

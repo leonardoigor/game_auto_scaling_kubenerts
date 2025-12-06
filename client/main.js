@@ -14,6 +14,10 @@ let deathOverlay = null;
 let projectiles = [];
 let lastTime = 0;
 let buffItems = [];
+let pingGatewayMs = null;
+let pingWorkerMs = null;
+let lastPingTs = 0;
+const latencyByPlayer = new Map();
 
 function lerp(a, b, t) { return a + (b - a) * t; }
 
@@ -29,6 +33,8 @@ async function connect() {
       allocRoom = alloc?.roomId || null;
     } catch (e) { }
   }
+
+  startPing();
   roomId = urlRoom || allocRoom || `room-${Math.random().toString(36).slice(2, 6)}`;
   sessionStorage.setItem("roomId", roomId);
   const socket = new WebSocket(wsUrl);
@@ -49,7 +55,7 @@ async function connect() {
 }
 
 function onMessage(ev) {
-  console.log(ev);
+  // console.log(ev);
 
   const msg = JSON.parse(ev.data);
   if (msg.type === "assign_room") {
@@ -68,20 +74,37 @@ function onMessage(ev) {
   } else if (msg.type === "state_update") {
     const next = new Map();
     for (const p of msg.payload.players) {
-      const prev = players.get(p.id) || { x: p.x, y: p.y, podId: p.podId, hp: p.hp, maxHp: p.maxHp, dead: p.dead, killerId: p.killerId, buffs: p.buffs };
+      const prev = players.get(p.id) || { x: p.x, y: p.y, podId: p.podId, speed: p.speed, hp: p.hp, maxHp: p.maxHp, dead: p.dead, killerId: p.killerId, buffs: p.buffs };
       const nx = lerp(prev.x, p.x, 0.3);
       const ny = lerp(prev.y, p.y, 0.3);
-      next.set(p.id, { x: nx, y: ny, podId: p.podId, hp: p.hp, maxHp: p.maxHp, dead: p.dead, killerId: p.killerId, buffs: p.buffs || [] });
+      next.set(p.id, { x: nx, y: ny, podId: p.podId, speed: p.speed, hp: p.hp, maxHp: p.maxHp, dead: p.dead, killerId: p.killerId, buffs: p.buffs || [] });
     }
     players = next;
     projectiles = Array.isArray(msg.payload.projectiles) ? msg.payload.projectiles : [];
     buffItems = Array.isArray(msg.payload.buffItems) ? msg.payload.buffItems : [];
     isLoading = false;
     draw();
+    updateSidebar();
     const me = players.get(playerId);
     if (me && me.dead && !deathShown) {
       showDeath(me.killerId);
     }
+  }
+  else if (msg.type === "pong_gateway") {
+    const t0 = msg.payload?.ts_client;
+    if (typeof t0 === "number") pingGatewayMs = Date.now() - t0;
+  }
+  else if (msg.type === "pong_worker") {
+    const t0 = msg.payload?.ts_client;
+    if (typeof t0 === "number") pingWorkerMs = Date.now() - t0;
+    latencyByPlayer.set(playerId, pingWorkerMs);
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({ type: "latency_report", payload: { rtt_ms: pingWorkerMs } }));
+    }
+  }
+  else if (msg.type === "latency_update") {
+    const p = msg.payload;
+    if (p && p.playerId) latencyByPlayer.set(p.playerId, p.rtt_ms);
   }
 }
 
@@ -129,6 +152,10 @@ function draw() {
     ctx.font = "12px sans-serif";
     const label = `${p.podId || "pod"}:${id}`;
     ctx.fillText(label, p.x - 10, p.y - 16);
+    const rtt = latencyByPlayer.get(id);
+    if (typeof rtt === "number") {
+      ctx.fillText(`${Math.floor(rtt)} ms`, p.x - 10, p.y - 28);
+    }
 
     if (typeof p.hp === "number" && typeof p.maxHp === "number") {
       const w = 26;
@@ -141,7 +168,7 @@ function draw() {
       if (Array.isArray(p.buffs) && p.buffs.length > 0) {
         ctx.fillStyle = "#fff";
         ctx.font = "12px sans-serif";
-        const text = p.buffs.join("");
+        const text = (Array.isArray(p.buffs) ? p.buffs.map((b) => b.type).join("") : "");
         ctx.fillText(text, p.x - w / 2, p.y - 24);
       }
     }
@@ -209,7 +236,65 @@ function showDeath(killerId) {
 
 function loop() {
   draw();
+  updateSidebar();
   requestAnimationFrame(loop);
+}
+
+function computeEffectiveStats() {
+  const me = players.get(playerId);
+  if (!me) return { baseSpeed: 0, effSpeed: 0, hp: 0, buffs: [] };
+  const baseSpeed = typeof me.speed === "number" ? me.speed : 180;
+  let ownSpeed = 1;
+  let enemySpeedDebuff = 1;
+  for (const b of (me.buffs || [])) {
+    if (b.type === "V") ownSpeed *= 1.5;
+  }
+  for (const [id, p] of players) {
+    if (id === playerId) continue;
+    const hasM = Array.isArray(p.buffs) && p.buffs.some((bb) => bb.type === "M");
+    if (!hasM) continue;
+    const dist = Math.hypot((p.x || 0) - (me.x || 0), (p.y || 0) - (me.y || 0));
+    if (dist <= 100) enemySpeedDebuff *= 0.7;
+  }
+  const effSpeed = Math.floor(baseSpeed * ownSpeed * enemySpeedDebuff);
+  return { baseSpeed, effSpeed, hp: me.hp || 0, buffs: me.buffs || [] };
+}
+
+function updateSidebar() {
+  const box = document.getElementById("sidebar-info");
+  if (!box) return;
+  const me = players.get(playerId);
+  const stats = computeEffectiveStats();
+  const buffsList = (stats.buffs || []).map((b) => {
+    const left = Math.max(0, Math.floor(((b.expiresAt || 0) - Date.now()) / 1000));
+    let name = b.type;
+    if (b.type === "V") name = "Velocidade+";
+    else if (b.type === "A") name = "Ataque+";
+    else if (b.type === "M") name = "Movimento-";
+    else if (b.type === "D") name = "Ataque-";
+    return `${b.type} (${name}) - ${left}s`;
+  }).join("\n");
+  const posX = me ? Math.floor(me.x || 0) : 0;
+  const posY = me ? Math.floor(me.y || 0) : 0;
+  const lines = [
+    `Posição: (${posX}, ${posY})`,
+    `HP: ${stats.hp}`,
+    `Velocidade base: ${stats.baseSpeed}`,
+    `Velocidade efetiva: ${stats.effSpeed}`,
+    `Ping Gateway: ${pingGatewayMs ?? "-"} ms`,
+    `Ping Worker: ${pingWorkerMs ?? "-"} ms`,
+    `Buffs ativos:`,
+    buffsList || "Nenhum",
+  ];
+  box.textContent = lines.join("\n");
+}
+
+function startPing() {
+  setInterval(() => {
+    if (!ws || ws.readyState !== 1) return;
+    lastPingTs = Date.now();
+    ws.send(JSON.stringify({ type: "ping", payload: { ts: lastPingTs } }));
+  }, 2000);
 }
 
 connect().catch(console.error);
