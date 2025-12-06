@@ -1,0 +1,8 @@
+FROM node:20-alpine
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm ci --only=production || npm install --only=production
+COPY worker ./worker
+COPY common ./common
+ENV TICK_MS=50
+CMD ["node","worker/index.js"]

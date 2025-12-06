@@ -1,0 +1,55 @@
+<!doctype html>
+<html>
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Jogo 2D</title>
+  <style>
+    html,
+    body {
+      margin: 0;
+      height: 100%;
+    }
+
+    canvas {
+      display: block;
+      background: #111;
+    }
+  </style>
+</head>
+
+<body>
+  <div style="display:flex; height:100%;">
+    <canvas id="c" width="800" height="600" style="flex:0 0 auto;"></canvas>
+    <div id="sidebar" style="flex:1; background:#1a1a1a; color:#eee; padding:12px; overflow:auto;">
+      <h3 style="margin:0 0 8px;">Tutorial</h3>
+      <div>
+        - Movimento: setas do teclado
+        <br />
+        - Mira: mouse
+        <br />
+        - Ataque: clique do mouse
+        <br />
+        - Buffs: aproxime-se dos itens laranja para coletar
+      </div>
+      <h3 style="margin:12px 0 8px;">Buffers</h3>
+      <div>
+        - V: Velocidade+ (×1.5 por instância)
+        <br />
+        - A: Ataque+ (×1.5 por instância)
+        <br />
+        - M: Movimento- (aura 100px, ×0.7 por fonte)
+        <br />
+        - D: Ataque- (aura 100px, ×0.7 por fonte)
+        <br />
+        Duração: 20s por buff, respawn ao expirar
+      </div>
+      <h3 style="margin:12px 0 8px;">Jogador</h3>
+      <pre id="sidebar-info" style="background:#111; padding:8px; border-radius:6px;">Carregando...</pre>
+    </div>
+  </div>
+  <script src="/main.js"></script>
+</body>
+
+</html>

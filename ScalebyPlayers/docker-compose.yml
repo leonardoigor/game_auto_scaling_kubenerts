@@ -1,0 +1,9 @@
+services:
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: redis-commander
+    ports:
+      - "8081:8081"
+    environment:
+      - REDIS_HOSTS=cluster:host.docker.internal:6379
+    restart: unless-stopped
